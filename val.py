@@ -120,9 +120,16 @@ def run(data,
         plots=True,
         callbacks=Callbacks(),
         compute_loss=None,
+        pruning = False
         ):
     # Initialize/load model and set device
     training = model is not None
+
+    if plots:
+        # Directories
+        save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
+        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+ 
     if training:  # called by train.py
         device, pt, jit, engine = next(model.parameters()).device, True, False, False  # get model device, PyTorch model
 
@@ -130,11 +137,7 @@ def run(data,
         model.half() if half else model.float()
     else:  # called directly
         device = select_device(device, batch_size=batch_size)
-
-        # Directories
-        save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
-        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
-
+        print(device)
         # Load model
         model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data)
         stride, pt, jit, onnx, engine = model.stride, model.pt, model.jit, model.onnx, model.engine
@@ -152,7 +155,6 @@ def run(data,
 
         # Data
         data = check_dataset(data)  # check
-
     # Configure
     model.eval()
     is_coco = isinstance(data.get('val'), str) and data['val'].endswith('coco/val2017.txt')  # COCO dataset
@@ -189,7 +191,11 @@ def run(data,
         dt[0] += t2 - t1
 
         # Inference
-        out, train_out = model(im) if training else model(im, augment=augment, val=True)  # inference, loss outputs
+        if training and not compute_loss:
+            out = model(im)
+            # print("\nHERE", type(out), len(out))
+        else:
+            out, train_out = model(im) if training else model(im, augment=augment, val=True)  # inference, loss outputs
         dt[1] += time_sync() - t2
 
         # Loss
@@ -242,8 +248,10 @@ def run(data,
             callbacks.run('on_val_image_end', pred, predn, path, names, im[si])
 
         # Plot images
+        # print("PLOTS", plots)
         if plots and batch_i < 3:
             f = save_dir / f'val_batch{batch_i}_labels.jpg'  # labels
+            # print("PLOT FILENAME:", f)
             Thread(target=plot_images, args=(im, targets, paths, f, names), daemon=True).start()
             f = save_dir / f'val_batch{batch_i}_pred.jpg'  # predictions
             Thread(target=plot_images, args=(im, output_to_target(out), paths, f, names), daemon=True).start()
@@ -272,6 +280,8 @@ def run(data,
     if not training:
         shape = (batch_size, 3, imgsz, imgsz)
         LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}' % t)
+        parameter_count, _, gflops = model.model.info(img_size=imgsz)
+        LOGGER.info(f'parameter_count: %d, gflops: %f'%(parameter_count, gflops))
 
     # Plots
     if plots:
@@ -305,7 +315,8 @@ def run(data,
             LOGGER.info(f'pycocotools unable to run: {e}')
 
     # Return results
-    model.float()  # for training
+    if not pruning:
+        model.float()  # for training
     if not training:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")

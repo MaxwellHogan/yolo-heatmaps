@@ -8,7 +8,7 @@ class InnvestigateModel(torch.nn.Module):
     """
     Generate layerwiser relevance propagation per-pixel explanation for classification
     result of Pytorch model.
-    
+
     (https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0130140).
 
     Attributes
@@ -23,12 +23,12 @@ class InnvestigateModel(torch.nn.Module):
     linear_rule : lrp_rules.LinearRule
         Rule for relevance propagation for convolutional layers
 
-    fwd_hooks : dict 
+    fwd_hooks : dict
         Dictionary containing torch.nn.Module to forward hook mappings
 
     inv_funcs : dict
         Dictionary containing torch.nn.Module to inverse function mappings
-    
+
     contrastive : bool
         Implement relevance propagation as contrastive
 
@@ -36,7 +36,7 @@ class InnvestigateModel(torch.nn.Module):
         Define entry point in hierarchical network architecture
 
     pass_not_implemented : bool
-        Silent pass layers that have no registered forward hooks 
+        Silent pass layers that have no registered forward hooks
 
     device : torch.device
         Device to utilize
@@ -52,7 +52,7 @@ class InnvestigateModel(torch.nn.Module):
         Use cpu device for computation.
 
     register_modules(model : torch.nn.Module) :
-        Registers model submodules. This will assign a registration number to 
+        Registers model submodules. This will assign a registration number to
         each submodule in a sequential order.
 
     register_hooks(model : torch.nn.Module) :
@@ -71,11 +71,11 @@ class InnvestigateModel(torch.nn.Module):
         the functional max_poolnd is used, the inversion will not work.
     """
 
-    def __init__(self, model : torch.nn.Module, 
+    def __init__(self, model : torch.nn.Module,
                  fwd_hooks : dict = {}, inv_funcs : dict = {},
                  contrastive : bool = False, entry_point : torch.nn.Module = None,
                  pass_not_implemented : bool = False, no_children : bool = False,
-                 power : int = 1, positive : bool = True, eps : float = 1e-6, 
+                 power : int = 1, positive : bool = True, eps : float = 1e-6,
                  device :  torch.device = torch.device('cpu')):
 
         super(InnvestigateModel, self).__init__()
@@ -110,9 +110,9 @@ class InnvestigateModel(torch.nn.Module):
                                  device=self.device)
 
         self.register_new_modules(fwd_hooks, inv_funcs)
-        
+
         # Parsing the individual model layers
-        
+
         self.register_hooks(entry_point)
         self.register_modules(entry_point, no_children)
 
@@ -174,7 +174,7 @@ class InnvestigateModel(torch.nn.Module):
         """
         Registers any necessary forward hooks that save input and output tensors
         for later computation of relevance distribution.
-        
+
         Args
         ----
 
@@ -193,21 +193,24 @@ class InnvestigateModel(torch.nn.Module):
                 self.register_hooks(mod)
                 mod.register_forward_hook(self.inverter.get_layer_fwd_hook(mod))
                 continue
-            
+
             mod.register_forward_hook(self.inverter.get_layer_fwd_hook(mod))
 
             # Special case for ReLU layer
             if isinstance(mod, torch.nn.ReLU) or isinstance(mod, torch.nn.modules.activation.ReLU):
                 mod.register_backward_hook(self.relu_hook_function)
-    
+
     def register_new_modules(self, fwd_hooks : dict = {}, inv_funcs : dict = {}) :
 
+        # print("registering forward hooks")
         for mod, fwd_hook in fwd_hooks.items() :
+            # print("\n", mod, fwd_hook)
             self.inverter.register_fwd_hook(mod, fwd_hook)
-        
+
         for mod, inv_func in inv_funcs.items() :
+            # print("\n", mod, inv_func)
             self.inverter.register_inv_func(mod, inv_func)
-    
+
     @staticmethod
     def relu_hook_function(module, grad_in, grad_out):
 
@@ -247,13 +250,13 @@ class InnvestigateModel(torch.nn.Module):
 
         Arguments
         ---------
-        
+
         in_tensor : torch.Tensor
             New input for which to predict an output.
 
         Returns
         -------
-        
+
         torch.Tensor
             Model prediction
         """
@@ -280,7 +283,7 @@ class InnvestigateModel(torch.nn.Module):
 
         list
             list of relevance snapshots
-        
+
         """
 
         if self.r_values is None:
@@ -293,7 +296,7 @@ class InnvestigateModel(torch.nn.Module):
         """
         Method for 'innvestigating' the model with the LRP rule chosen at
         the initialization of the InnvestigateModel.
-        
+
         Arguments
         ---------
 
@@ -301,7 +304,7 @@ class InnvestigateModel(torch.nn.Module):
             Input for which to evaluate the LRP algorithm. If input is None, the
             last evaluation is used. If no evaluation has been performed since
             initialization, an error is raised.
-        
+
         rel_for_class : int
             Index of the class for which the relevance distribution is to be analyzed.
             If None, the 'winning' class is used for indexing.
@@ -312,7 +315,7 @@ class InnvestigateModel(torch.nn.Module):
         LayerRelevance
             Model output and relevances of nodes in the input layer
         """
-        
+
         if self.r_values is not None:
             for elt in self.r_values:
                 del elt
@@ -329,18 +332,18 @@ class InnvestigateModel(torch.nn.Module):
 
             # Evaluate the model anew if a new input is supplied.
             if in_tensor is not None:
-                self.evaluate(in_tensor)            
+                self.evaluate(in_tensor)
 
             # We have to iterate through the model backwards.
             # The module list is computed for every forward pass
             # by the model inverter.
             rev_model = self.inverter.module_list[::-1]
-            
+
             if initializer is not None :
                 relevance = initializer(self.prediction)
             else :
                 relevance = LayerRelevance(self.prediction)
-            
+
             # List to save relevance distributions per layer
             self.r_values = [relevance]
             #print('Start', 'Relevance', relevance)
@@ -353,10 +356,10 @@ class InnvestigateModel(torch.nn.Module):
 
             if self.save_r_values :
                 self.r_values.append(relevance.snapshot())
-            
+
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
-            
+
             return relevance
 
     def forward(self, in_tensor : torch.Tensor) -> torch.Tensor :

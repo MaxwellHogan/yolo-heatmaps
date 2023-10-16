@@ -141,14 +141,17 @@ class Inverter(torch.nn.Module):
         """
 
         try :
+            # print(self.fwd_hooks[type(layer)],":", layer.__class__.__name__)
             return self.fwd_hooks[type(layer)]
         except :
             if self.pass_not_implemented :
+                # print("silent pass:", layer.__class__.__name__)
                 return silent_pass
-            
+
             raise \
             NotImplementedError('Forward hook for layer type \"{}\" not implemented'.
                                 format(type(layer)))
+
 
     def invert(self, layer : torch.nn.Module, relevance : torch.Tensor, **kwargs) -> torch.Tensor :
 

@@ -175,7 +175,13 @@ class ConfusionMatrix:
         try:
             import seaborn as sn
 
+            np.savetxt(Path(save_dir) / 'confusion_matrix_raw.csv', self.matrix, delimiter=",")
+
             array = self.matrix / ((self.matrix.sum(0).reshape(1, -1) + 1E-6) if normalize else 1)  # normalize columns
+
+            ## save results to csv file for custom plotting
+            np.savetxt(Path(save_dir) / 'confusion_matrix.csv', array, delimiter=",")
+
             array[array < 0.005] = np.nan  # don't annotate (would appear as 0.00)
 
             fig = plt.figure(figsize=(12, 9), tight_layout=True)
@@ -317,6 +323,14 @@ def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=()):
     plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
     fig.savefig(Path(save_dir), dpi=250)
     plt.close()
+
+    ## save results to csv file for custom plotting 
+    # print(px.shape, py.shape)
+    all_data = np.concatenate((np.expand_dims(px, axis = -1),py), axis=1) 
+    csv_out = Path(save_dir).with_suffix(".csv")
+    # print(csv_out)
+    np.savetxt(csv_out, all_data, delimiter=",", fmt='%s')
+
 
 
 def plot_mc_curve(px, py, save_dir='mc_curve.png', names=(), xlabel='Confidence', ylabel='Metric'):

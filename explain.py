@@ -14,6 +14,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+## MOD : for data cache - we pickle explainations to be used for other scripts/programs
+import pickle
+
 import cv2
 from lrp.rules import ConvRule
 import torch
@@ -93,6 +96,9 @@ def get_explanation(inn_model, init, contrastive, b1, b2, cls, smooth_ks, box, s
     coords = '_'.join([str(int(c.item())) for c in box])
     plt.savefig(save_dir / (f'explain{coords}.png'))
     plt.ioff()
+    
+    ## MOD : return explaination to be used elsewhere
+    return explanation.cpu().numpy()
 
 @torch.no_grad()
 def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
@@ -170,9 +176,13 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
     model.warmup(imgsz=(1, 3, *imgsz), half=half)  # warmup
     dt, seen = [0.0, 0.0, 0.0, 0.0], 0
     for path, im, im0s, vid_cap, s in dataset:
+        # print(im.shape)
+        # print(type(im))
         t1 = time_sync()
         im = torch.from_numpy(im).to(device)
         im = im.half() if half else im.float()  # uint8 to fp16/32
+
+
         im /= 255  # 0 - 255 to 0.0 - 1.0
         if len(im.shape) == 3:
             im = im[None]  # expand for batch dim
@@ -269,19 +279,31 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
                 # Write results
                 det = torch.cat((torch.zeros_like(det[:,:4]), det), dim=-1)
                 det[:,:4] = scale_coords(im.shape[2:], det[:,4:8].clone(), im0.shape).round()
-                for *xyxy, conf, cls in reversed(det):
+
+                ## MOD : define output dictionary - this will be used to store the shap img for each target
+                output_payload = dict()
+
+                ## MOD : changed to enumerate the index also 
+                for idx, (*xyxy, conf, cls) in enumerate(reversed(det)):
 
                     xyxy_scaled = xyxy[:4]
                     xyxy = xyxy[4:8]
 
+                    ## MOD : define target - to bring inline with DeepSHAP work.
+                    idx_ = len(det) - idx - 1 ## account for reversed 
+                    target = torch.stack(xyxy + [cls, conf]).cpu().numpy()
+                    target[[2,3]] = target[[2,3]] - target[[0,1]] ## convert to xywh
+                    target_dict = {"target" : target}
+                    target_dict["shap_values"] = None
+                    
                     if box is None :
 
                         if rel_for_class is not None and rel_for_class != cls :
                             continue
-
-                        get_explanation(inn_model, init, contrastive, b1, b2, int(cls),
-                                        smooth_ks, xyxy, save_dir, cmap, names)
-
+                        
+                        ## MOD : now we get the explanation for the output payload - this is so we can experiment with them (I know these are shap values)
+                        target_dict["shap_values"] = get_explanation(inn_model, init, contrastive, b1, b2, int(cls),
+                                                                     smooth_ks, xyxy, save_dir, cmap, names)
                     
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy_scaled).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
@@ -295,6 +317,17 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
                         annotator.box_label(xyxy_scaled, label, color=colors(c, True))
                         if save_crop:
                             save_one_box(xyxy_scaled, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+
+
+                    ## MOD : put information on this target in the output payload
+                    output_payload[idx_] = target_dict
+
+                ## MOD : write the output payload to pickle file 
+                pickle_fn = save_dir / "output.pickle"
+                with open(pickle_fn, 'wb') as file:
+                    # dump information to that file
+                    pickle.dump(output_payload, file)
+                print("Pickle has been wrote to...")
 
             # Print time (inference-only)
             LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')

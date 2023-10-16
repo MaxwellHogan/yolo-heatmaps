@@ -192,6 +192,7 @@ def prune(model, amount=0.3):
 
 
 def fuse_conv_and_bn(conv, bn):
+    # print(conv.weight.shape, bn.weight.shape)
     # Fuse convolution and batchnorm layers https://tehnokv.com/posts/fusing-batchnorm-and-conv/
     fusedconv = nn.Conv2d(conv.in_channels,
                           conv.out_channels,
@@ -199,17 +200,21 @@ def fuse_conv_and_bn(conv, bn):
                           stride=conv.stride,
                           padding=conv.padding,
                           groups=conv.groups,
+
                           bias=True).requires_grad_(False).to(conv.weight.device)
 
     # prepare filters
     w_conv = conv.weight.clone().view(conv.out_channels, -1)
     w_bn = torch.diag(bn.weight.div(torch.sqrt(bn.eps + bn.running_var)))
+
     fusedconv.weight.copy_(torch.mm(w_bn, w_conv).view(fusedconv.weight.shape))
 
     # prepare spatial bias
-    b_conv = torch.zeros(conv.weight.size(0), device=conv.weight.device) if conv.bias is None else conv.bias
+    b_conv = torch.zeros(conv.weight.size(0), device=conv.weight.device, dtype = conv.weight.dtype) if conv.bias is None else conv.bias
     b_bn = bn.bias - bn.weight.mul(bn.running_mean).div(torch.sqrt(bn.running_var + bn.eps))
     fusedconv.bias.copy_(torch.mm(w_bn, b_conv.reshape(-1, 1)).reshape(-1) + b_bn)
+
+    fusedconv.to(dtype=conv.weight.dtype)
 
     return fusedconv
 
@@ -224,18 +229,22 @@ def model_info(model, verbose=False, img_size=640):
             name = name.replace('module_list.', '')
             print('%5g %40s %9s %12g %20s %10.3g %10.3g' %
                   (i, name, p.requires_grad, p.numel(), list(p.shape), p.mean(), p.std()))
-
+    gflops = None
     try:  # FLOPs
         from thop import profile
         stride = max(int(model.stride.max()), 32) if hasattr(model, 'stride') else 32
         img = torch.zeros((1, model.yaml.get('ch', 3), stride, stride), device=next(model.parameters()).device)  # input
+        if next(model.parameters()).dtype == torch.half: img = img.half()
         flops = profile(deepcopy(model), inputs=(img,), verbose=False)[0] / 1E9 * 2  # stride GFLOPs
         img_size = img_size if isinstance(img_size, list) else [img_size, img_size]  # expand if int/float
-        fs = ', %.1f GFLOPs' % (flops * img_size[0] / stride * img_size[1] / stride)  # 640x640 GFLOPs
+        gflops = (flops * img_size[0] / stride * img_size[1] / stride) 
+        fs = ', %.1f GFLOPs' % gflops # 640x640 GFLOPs
     except (ImportError, Exception):
         fs = ''
 
     LOGGER.info(f"Model Summary: {len(list(model.modules()))} layers, {n_p} parameters, {n_g} gradients{fs}")
+
+    return n_p, n_g, gflops
 
 
 def scale_img(img, ratio=1.0, same_shape=False, gs=32):  # img(16,3,256,416)

@@ -41,7 +41,7 @@ class Conv(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p), groups=g, bias=False)
         self.bn = nn.BatchNorm2d(c2)
-        self.act = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
+        self.act = nn.ReLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
 
     def forward(self, x):
         return self.act(self.bn(self.conv(x)))
@@ -90,6 +90,33 @@ class TransformerBlock(nn.Module):
         b, _, w, h = x.shape
         p = x.flatten(2).permute(2, 0, 1)
         return self.tr(p + self.linear(p)).permute(1, 2, 0).reshape(b, self.c2, w, h)
+
+## created this class to attach a hook to it   
+class Functional_add(nn.Module):
+    def __init__(self, add):
+        super().__init__()
+        self.add = add
+        self.total_ops = torch.DoubleTensor([int(0)])
+    def forward(self, *args):
+
+        channels = []
+        for input_ in args:
+            channels.append(input_.shape[1])
+
+        end_idx = min(channels)
+
+        args_ = []
+        for input_ in args:
+            args_.append(input_[:, :end_idx])## cut off the end
+
+        args = tuple(args_)
+
+        out_ = torch.add(*args)
+        # print("add out sum:",torch.sum(out_))
+
+        return out_
+    
+
 class Bottleneck(nn.Module):
     # Standard bottleneck
     def __init__(self, c1, c2, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, shortcut, groups, expansion
@@ -99,8 +126,18 @@ class Bottleneck(nn.Module):
         self.cv2 = Conv(c_, c2, 3, 1, g=g)
         self.add = shortcut and c1 == c2
 
+        self.functional_add = Functional_add(self.add)
+
     def forward(self, x):
-        return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
+        # return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
+        if hasattr(self, "functional_add"):
+            # print(self.add)
+            return self.functional_add(x, self.cv2(self.cv1(x))) if self.add else self.cv2(self.cv1(x))
+        else:
+            # print("############## setting add ##############")
+            setattr(self, "functional_add", Functional_add(self.add))
+            return self.functional_add(x, self.cv2(self.cv1(x))) if self.add else self.cv2(self.cv1(x))
+
 
 class BottleneckCSP(nn.Module):
     # CSP Bottleneck https://github.com/WongKinYiu/CrossStagePartialNetworks
@@ -126,15 +163,18 @@ class C3(nn.Module):
     def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
         super().__init__()
         c_ = int(c2 * e)  # hidden channels
+
+        # self.cat = Concat(dimension=1) ## added to attach hook to
+
         self.cv1 = Conv(c1, c_, 1, 1)
         self.cv2 = Conv(c1, c_, 1, 1)
         self.cv3 = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
         self.m = nn.Sequential(*(Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n)))
         # self.m = nn.Sequential(*[CrossConv(c_, c_, 3, 1, g, 1.0, shortcut) for _ in range(n)])
+        
 
     def forward(self, x):
-        return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), dim=1))
-
+        return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), dim = 1))
 
 class C3TR(C3):
     # C3 module with TransformerBlock()
@@ -184,6 +224,7 @@ class SPPF(nn.Module):
         self.cv1 = Conv(c1, c_, 1, 1)
         self.cv2 = Conv(c_ * 4, c2, 1, 1)
         self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
+        self.cat = Concat(dimension=1) ## modified for forward prop
 
     def forward(self, x):
         x = self.cv1(x)
@@ -191,8 +232,9 @@ class SPPF(nn.Module):
             warnings.simplefilter('ignore')  # suppress torch 1.9.0 max_pool2d() warning
             y1 = self.m(x)
             y2 = self.m(y1)
-            return self.cv2(torch.cat([x, y1, y2, self.m(y2)], 1))
+            # return self.cv2(torch.cat([x, y1, y2, self.m(y2)], 1))
 
+            return self.cv2(torch.cat([x, y1, y2, self.m(y2)], dim=1))
 
 class Focus(nn.Module):
     # Focus wh information into c-space
@@ -392,6 +434,8 @@ class DetectMultiBackend(nn.Module):
         b, ch, h, w = im.shape  # batch, channel, height, width
         if self.pt or self.jit:  # PyTorch
             y = self.model(im) if self.jit else self.model(im, augment=augment, visualize=visualize)
+            # for o in y:
+            #     print(type(o))
             return y if val else y[0]
         elif self.dnn:  # ONNX OpenCV DNN
             im = im.cpu().numpy()  # torch to numpy
@@ -645,6 +689,7 @@ class Detections:
 
     def __len__(self):
         return self.n
+    
 class Classify(nn.Module):
     # Classification head, i.e. x(b,c1,20,20) to x(b,c2)
     def __init__(self, c1, c2, k=1, s=1, p=None, g=1):  # ch_in, ch_out, kernel, stride, padding, groups
@@ -656,3 +701,4 @@ class Classify(nn.Module):
     def forward(self, x):
         z = torch.cat([self.aap(y) for y in (x if isinstance(x, list) else [x])], 1)  # cat if list
         return self.flat(self.conv(z))  # flatten to x(b,c2)
+

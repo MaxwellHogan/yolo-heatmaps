@@ -23,17 +23,19 @@ from utils.autoanchor import check_anchor_order
 from utils.general import LOGGER, check_version, check_yaml, make_divisible, print_args
 from utils.plots import feature_visualization
 from utils.torch_utils import fuse_conv_and_bn, initialize_weights, model_info, scale_img, select_device, time_sync
-
 try:
     import thop  # for FLOPs computation
 except ImportError:
     thop = None
+
+## NEEDED FOR THOPS LIBRARY 
 
 class Detect(nn.Module):
     stride = None  # strides computed during build
     onnx_dynamic = False  # ONNX export parameter
 
     def __init__(self, nc=80, anchors=(), ch=(), inplace=True):  # detection layer
+
         super().__init__()
         self.nc = nc  # number of classes
         self.no = nc + 5  # number of outputs per anchor
@@ -46,6 +48,7 @@ class Detect(nn.Module):
         self.inplace = inplace  # use in-place ops (e.g. slice assignment)
 
     def forward(self, x):
+        
         z = []  # inference output
         for i in range(self.nl):
             x[i] = self.m[i](x[i])  # conv
@@ -53,23 +56,38 @@ class Detect(nn.Module):
             x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
 
             if not self.training:  # inference
+                            
                 if self.onnx_dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
                     self.grid[i], self.anchor_grid[i] = self._make_grid(nx, ny, i)
 
                 y = x[i].sigmoid()
-                if self.inplace:
-                    y[..., 0:2] = (y[..., 0:2] * 2 - 0.5 + self.grid[i]) * self.stride[i]  # xy
-                    y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
-                else:  # for YOLOv5 on AWS Inferentia https://github.com/ultralytics/yolov5/pull/2953
-                    xy = (y[..., 0:2] * 2 - 0.5 + self.grid[i]) * self.stride[i]  # xy
-                    wh = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
-                    y = torch.cat((xy, wh, y[..., 4:]), -1)
+
+                # y[..., 0:2] = (y[..., 0:2] * 2 - 0.5 + self.grid[i]) * self.stride[i]  # xy
+                # y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
+                
+                mask = torch.ones_like(y)
+                mask[..., 0:4] = 2 ## multiply by 2
+                y = torch.mul(y,mask)
+
+                mask = torch.zeros_like(y)
+                mask[..., 0:2] += -.5 + self.grid[i].to(x[i].device) ## subtract offset
+                y = torch.add(y,mask)
+
+                mask = torch.ones_like(y)
+                mask[..., 2:4] = y[..., 2:4] ## square wh
+                y = torch.mul(y,mask)
+
+                mask = torch.ones_like(y)
+                mask[..., 0:2] = self.stride[i] ## multiply by stride
+                mask[..., 2:4] = self.anchor_grid[i] ## multiply by anchors
+                y = torch.mul(y,mask)
                     
                 z.append(y)
-                
+
         if self.training :
             return x
         else :
+            # print("here")
             return (z, x)
 
     def _make_grid(self, nx=20, ny=20, i=0):
@@ -118,7 +136,7 @@ class Model(nn.Module):
             self.stride = m.stride
             self._initialize_biases()  # only run once
             print('DETECT SET')
-            setattr(m, 'return_type', self.return_type)
+            # setattr(m, 'return_type', self.return_type)
 
         # Init weights, biases
         initialize_weights(self)
@@ -231,7 +249,7 @@ class Model(nn.Module):
         return self
 
     def info(self, verbose=False, img_size=640):  # print model information
-        model_info(self, verbose, img_size)
+        return model_info(self, verbose, img_size)
 
     def _apply(self, fn):
         # Apply to(), cpu(), cuda(), half() to model tensors that are not parameters or registered buffers

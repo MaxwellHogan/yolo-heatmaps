@@ -656,12 +656,20 @@ def clip_coords(boxes, shape):
 
 def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, multi_label=False,
                         labels=(), max_det=300):
-    
+
     """Runs Non-Maximum Suppression (NMS) on inference results
 
     Returns:
          list of detections, on (n,6) tensor per image [xyxy, conf, cls]
     """
+    if type(prediction) == tuple:
+        prediction = prediction[0]
+
+    if type(prediction) == list:
+      ## convert to single tensor
+      prediction = [pred.view(pred.shape[0], -1, pred.shape[-1]) for pred in prediction]
+      prediction = torch.cat(prediction, dim = 1)
+      # print(prediction.shape)
 
     nc = prediction.shape[2] - 5  # number of classes
     xc = prediction[..., 4] > conf_thres  # candidates
@@ -681,7 +689,7 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
     t = time.time()
     output = [torch.zeros((0, 6), device=prediction.device)] * prediction.shape[0]
     for xi, x in enumerate(prediction):  # image index, image inference
-        
+
         # Apply constraints
         # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
         x = x[xc[xi]]  # confidence
