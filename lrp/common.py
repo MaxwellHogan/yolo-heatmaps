@@ -1,6 +1,6 @@
 import torch
 
-from torch.nn.functional import max_unpool2d, max_pool2d
+from torch.nn.functional import max_unpool2d, max_pool2d, pad
 from lrp.utils import LayerRelevance
 
 def prop_SPPF(*args):
@@ -87,25 +87,43 @@ def prop_Detect(*args):
 def prop_Conv(*args):
 
     inverter, mod, relevance = args
+
     return inverter(mod.conv, relevance)
+    
 
 
 def prop_C3(*args):
-
+    # print("######## prop_C3 start #######")
     inverter, mod, relevance = args
     msg = relevance.scatter(which=-1)
 
-    c_ = msg.size(1)
+    msg = inverter(mod.cv3, msg)
 
-    msg_cv1 = msg[:, : (c_ // 2), ...]
-    msg_cv2 = msg[:, (c_ // 2) :, ...]
+    # print("Output shapes (cv2, m[-1])", mod.cv2.conv.out_channels, mod.m[-1].cv2.conv.out_tensor.shape)
 
-    for m1 in mod.m:
+    c_ = msg.shape[0] - mod.cv2.conv.out_channels - 1
+
+    msg_cv1 = msg[:, : c_, ...]
+    msg_cv2 = msg[:, c_ :, ...]
+
+    # print("before cv1, cv2",msg_cv1.shape, msg_cv2.shape)
+
+    for m1 in reversed(mod.m):
+        ## account for complications created from pruning around addition layers 
+        pad_size = m1.cv2.conv.out_channels - msg_cv1.shape[1]
+        # print("msg_cv1 pad size:", pad_size)
+        msg_cv1 = pad(msg_cv1, (0,0,0,0,0, pad_size), "constant", 0)
+        # print("\t", m1.__class__.__name__, msg_cv1.shape, m1.cv2.conv.out_channels)
         msg_cv1 = inverter(m1, msg_cv1)
-    
-    msg = inverter(mod.cv1, msg_cv1) + inverter(mod.cv2, msg_cv2)
+
+
+    # print("after  cv1, cv2",msg_cv1.shape, msg_cv2.shape)
+
+    msg = inverter(mod.cv1, msg_cv1[:, :mod.cv1.conv.out_channels]) + inverter(mod.cv2, msg_cv2[:, :mod.cv2.conv.out_channels])
 
     relevance.gather([(-1, msg)])
+
+    # print("######## prop_C3 end #######")
 
     return relevance
 
@@ -113,12 +131,31 @@ def prop_Bottleneck(*args):
 
     inverter, mod, relevance_in = args
 
+    # print("BOTTLE:", relevance_in.shape, mod.cv2.conv.out_channels)
+
     ar = mod.cv2.conv.out_tensor.abs()
     ax = mod.cv1.conv.in_tensor.abs()
 
     relevance = relevance_in #* ar / (ax + ar)
-    relevance = inverter(mod.cv1, relevance)
     relevance = inverter(mod.cv2, relevance)
-    relevance = relevance #+ relevance_in * ax / (ax + ar)
+    relevance = inverter(mod.cv1, relevance)
+
+    ## account for pruned parts between addition layers 
+    pad_size = relevance_in.shape[1] - relevance.shape[1]
+    end_idx = min(relevance_in.shape[1], relevance.shape[1])
+
+    # print("\t", relevance_in.shape, relevance.shape, pad_size, end_idx)
+    if pad_size > 0: 
+        relevance = pad(relevance, (0,0,0,0,0, pad_size), "constant", 0)
+    elif pad_size < 0:
+        relevance_in = pad(relevance_in, (0,0,0,0,0, abs(pad_size)), "constant", 0)
+    else: 
+        pass
+
+    # print("\t", relevance_in[:, :end_idx].shape, relevance[:, :end_idx].shape)
+    # relevance = relevance[:, :end_idx] + relevance_in[:, :end_idx] #* ax / (ax + ar)
+    # print("\t", relevance_in.shape, relevance.shape)
+    relevance = relevance *(1 + relevance_in) #* ax / (ax + ar)
+
 
     return relevance

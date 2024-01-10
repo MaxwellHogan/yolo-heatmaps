@@ -99,7 +99,7 @@ class Inverter(torch.nn.Module):
 
     # Implemented rules for relevance propagation.
     def __init__(self, linear_rule=None, conv_rule=None, pass_not_implemented=False,
-                 device=torch.device('cpu'),):
+                 device=torch.device('cpu'), unit_pickler = None):
 
         self.device = device
         self.warned_log_softmax = False
@@ -109,6 +109,7 @@ class Inverter(torch.nn.Module):
         self.inv_funcs= {}
         self.pass_not_implemented = pass_not_implemented
         self.module_list = []
+        self.unit_pickler = unit_pickler
     
     def register_fwd_hook(self, module, fwd_hook):
 
@@ -176,7 +177,10 @@ class Inverter(torch.nn.Module):
                 Redistributed relevance going to the lower layers in the network.
                 
         """
-        
+        # if type(layer) in IDENTITY_MAPPINGS :
+        if layer.__class__.__name__ == "Conv":
+            self.unit_pickler(layer.act, None, relevance)
+
         if isinstance(layer, (Conv1d, Conv2d, Conv3d)):
             if self.conv_rule is None :
                 raise Exception('Model contains conv layers but the conv rule was not set !')
@@ -194,6 +198,10 @@ class Inverter(torch.nn.Module):
                 relevance = self.invert(l, relevance)
             return relevance
         elif type(layer) in IDENTITY_MAPPINGS :
+            ## MOD : here the layer should be an activation - therefore call the pickler here!
+            # print(layer.__class__.__name__)
+            # if hasattr(layer, "conv_key"):
+                
             return relevance
         elif hasattr(layer, 'propagate'):
             return layer.propagate(self, relevance)

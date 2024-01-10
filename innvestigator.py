@@ -3,6 +3,11 @@ from lrp.utils import pprint, LayerRelevance
 from lrp.rules import ConvRule, LinearRule
 from inverter import Inverter
 
+
+import sys 
+sys.path.append('../yolo_deepshap')
+from deepshap_hooks import Unit_pickler
+
 class InnvestigateModel(torch.nn.Module):
 
     """
@@ -76,7 +81,8 @@ class InnvestigateModel(torch.nn.Module):
                  contrastive : bool = False, entry_point : torch.nn.Module = None,
                  pass_not_implemented : bool = False, no_children : bool = False,
                  power : int = 1, positive : bool = True, eps : float = 1e-6,
-                 device :  torch.device = torch.device('cpu')):
+                 device :  torch.device = torch.device('cpu'),
+                 filter_rank_dir = "Unit_pickler_temp"):
 
         super(InnvestigateModel, self).__init__()
         self.model = model
@@ -87,7 +93,7 @@ class InnvestigateModel(torch.nn.Module):
         self.contrastive = contrastive
         self.device = device
         self.conv_rule = ConvRule(power=power,
-                                  positive=positive,
+                                  positive=True,
                                   eps=eps,
                                   contrastive=contrastive)
         self.linear_rule = LinearRule(power=power,
@@ -101,22 +107,28 @@ class InnvestigateModel(torch.nn.Module):
         if entry_point is None :
             entry_point = self.model
 
+        ## MOD : adding object for pickling layers 
+        self.unit_pickler = Unit_pickler(out_parent_dir = filter_rank_dir, num_samples=1, shap = False)
+
         # Initialize the 'Relevance Propagator' with the chosen rule.
         # This will be used to back-propagate the relevance values
         # through the layers in the innvestigate method.
         self.inverter = Inverter(linear_rule = self.linear_rule,
                                  conv_rule = self.conv_rule,
                                  pass_not_implemented=pass_not_implemented,
-                                 device=self.device)
+                                 device=self.device,
+                                 unit_pickler = self.unit_pickler)
 
         self.register_new_modules(fwd_hooks, inv_funcs)
 
         # Parsing the individual model layers
-
         self.register_hooks(entry_point)
         self.register_modules(entry_point, no_children)
 
         self.relevance_cache = {}
+
+    def next_target(self):
+        self.unit_pickler.next_target()
 
     def cuda(self, device : torch.device = None):
 
@@ -192,6 +204,13 @@ class InnvestigateModel(torch.nn.Module):
             if list(mod.children()):
                 self.register_hooks(mod)
                 mod.register_forward_hook(self.inverter.get_layer_fwd_hook(mod))
+                if mod.__class__.__name__ == "Conv":
+                #     ## if we are pruning and this is ome kinda conv layer or whaterver
+                #     ## pickle it's importance.
+                #     ## kinda worried this won't work - may get killed when hook is removed. 
+                    if not hasattr(mod.act, 'conv_key'):
+                        setattr(mod.act, 'conv_key', mod.conv.conv_key) ## copy the conv key to the act
+                #     self.bwd_handles.append(mod.act.register_backward_hook(self.unit_pickler))
                 continue
 
             mod.register_forward_hook(self.inverter.get_layer_fwd_hook(mod))
@@ -353,6 +372,8 @@ class InnvestigateModel(torch.nn.Module):
                 self.r_values.append(relevance)
                 relevance = self.inverter(layer, relevance)
                 #print(layer.reg_num, type(layer), 'Relevance', relevance)
+
+            self.unit_pickler.compile_scores()
 
             if self.save_r_values :
                 self.r_values.append(relevance.snapshot())

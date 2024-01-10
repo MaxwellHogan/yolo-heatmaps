@@ -195,8 +195,7 @@ class LayerRelevance(torch.Tensor) :
         
         return 'LayerRelevance({}, cache={}, contrastive={})'.\
                format(layer_rel, cached_rel, self.contrastive)
-        
-    
+
     def scatter(self, which=None, destroy=True):
 
         """

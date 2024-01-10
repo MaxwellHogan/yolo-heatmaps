@@ -46,6 +46,10 @@ from torchvision.transforms import Normalize
 from models.yolo import Detect
 from models.common import C3, Conv, Bottleneck, Concat, SPPF
 
+# print(os.getcwd())
+sys.path.append('../yolo_deepshap')
+from deepshap_pruner import Map_my_model
+
 
 def get_explanation(inn_model, init, contrastive, b1, b2, cls, smooth_ks, box, save_dir, cmap, names) :
     
@@ -83,6 +87,8 @@ def get_explanation(inn_model, init, contrastive, b1, b2, cls, smooth_ks, box, s
         #h = lrp.mean() + 2*lrp.std()
         #lrp[lrp > h] = h
         explanation = lrp_p.sum(dim=1)[0]
+
+    inn_model.next_target()
 
     #explanation = (explanation - explanation.min()) / (explanation.max() - explanation.min())
     #explanation = 2*explanation - 1
@@ -136,6 +142,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         box_xyxy=None,
         cmap='viridis',
         smooth_ks=7,
+        filter_rank_dir = "Unit_pickler_temp",
         ):
     
     source = str(source)
@@ -156,6 +163,9 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
     stride, names, pt, jit, onnx, engine = model.stride, model.names, model.pt, model.jit, model.onnx, model.engine
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
+    ## support my lib
+    setattr(model.model, "device", device)
+
     # Half
     half &= (pt or jit or engine) and device.type != 'cpu'  # half precision only supported by PyTorch on CUDA
     if pt or jit:
@@ -175,6 +185,11 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
     # Run inference
     model.warmup(imgsz=(1, 3, *imgsz), half=half)  # warmup
     dt, seen = [0.0, 0.0, 0.0, 0.0], 0
+
+    ## this step is needed to use the pickler method
+    model_mapper = Map_my_model(model.model)
+    # print(model)
+
     for path, im, im0s, vid_cap, s in dataset:
         # print(im.shape)
         # print(type(im))
@@ -204,7 +219,9 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
                                                   Bottleneck : prop_Bottleneck,
                                                   Concat : prop_Concat,
                                                   SPPF : prop_SPPF },
-                                      device=device)
+                                      device=device, 
+                                      filter_rank_dir=filter_rank_dir
+                                      )
 
 
         visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
@@ -244,6 +261,8 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
             get_explanation(inn_model, init, contrastive, b1, b2,
                             rel_for_class, smooth_ks, box, 
                             save_dir, cmap, names)
+            
+        
 
         dt[3] += time_sync() - t4
 
@@ -365,6 +384,8 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
     if update:
         strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
+    
+
 
 
 def parse_opt():
@@ -406,7 +427,10 @@ def parse_opt():
     parser.add_argument('--smooth-ks', type=int, default=1, help='Box to restrict investigation (X,Y,W,H format)')
     parser.add_argument('--box-xyxy', nargs='+', type=int, default=None, help='Box to restrict investigation (X,Y,X,Y format)')
     parser.add_argument('--cmap', default=None, type=str, help='Explanation color map (default set to seismic/magma when contrastive / non-contrastive')
-
+    
+    ## MOD : add argument where to dump the pickled filter ranks 
+    parser.add_argument('--filter_rank_dir', default=None, type=str, help='filter_rank_dir')
+    
     opt = parser.parse_args()
     if opt.cmap is None :
         opt.cmap = 'magma' if not opt.contrastive else 'seismic'

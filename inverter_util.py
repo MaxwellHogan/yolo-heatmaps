@@ -49,7 +49,7 @@ def winner_takes_all(relevance_in : torch.Tensor, in_shape : iterable, indices :
 def conv_nd_fwd_hook(m, in_tensor, out_tensor):
 
     """ Default n-dimensional convolution forward hook """
-    
+    # print("inside forward hook",m.out_channels, out_tensor.shape)
     setattr(m, "in_tensor", in_tensor[0])
     setattr(m, "out_tensor", out_tensor)
 

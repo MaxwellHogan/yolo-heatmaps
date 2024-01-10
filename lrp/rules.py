@@ -282,8 +282,12 @@ class ConvRule(object):
     def __propagate(self, module, relevance_in):
 
         """ Implementation of 4-step relevance propagation procedure """
-
-        relevance_in = torch.cat([ r.view_as(module.out_tensor) for r in relevance_in ], dim=0)
+        # print("Start:",module.conv_key)
+        # print("rel shape", [r.shape for r in relevance_in])
+        # print("in  shape", module.in_tensor.shape, module.in_channels)
+        # print("out shape", module.out_tensor.shape, module.out_channels)
+            
+        relevance_in = torch.cat([r.view_as(module.out_tensor) for r in relevance_in ], dim=0)
         conv_fwd = self.__get_fwd_step(module)
         conv_bwd = self.__get_bwd_step(module)
 
