@@ -40,7 +40,7 @@ from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, time_sync
 from lrp.initializers import YOLOv5Initializer
 from lrp.common import ( prop_Concat, Concat_fwd_hook, prop_Detect, 
-                         prop_C3, prop_Conv, prop_Bottleneck,
+                         prop_C3, prop_C3_cv2_pruned, prop_Conv, prop_Bottleneck,
                          prop_SPPF, SPPF_fwd_hook )
 from torchvision.transforms import Normalize
 from models.yolo import Detect
@@ -48,7 +48,8 @@ from models.common import C3, Conv, Bottleneck, Concat, SPPF
 
 # print(os.getcwd())
 sys.path.append('../yolo_deepshap')
-from deepshap_pruner import Map_my_model
+from deepshap_pruner import Map_my_model, C3_cv2_pruned
+from deepshap_data import load_targets
 
 
 def get_explanation(inn_model, init, contrastive, b1, b2, cls, smooth_ks, box, save_dir, cmap, names) :
@@ -63,7 +64,7 @@ def get_explanation(inn_model, init, contrastive, b1, b2, cls, smooth_ks, box, s
     dt = t2-t1
 
     lrp_out = lrp_out.scatter(-1)
-    print(f'Explain cls {names[cls]} in {dt * 1E03} ms')
+    # print(f'Explain cls {names[cls]} in {dt * 1E03} ms')
     
     lrp_out =  torch.nn.functional.avg_pool2d(lrp_out.cpu(),
                                               kernel_size=smooth_ks,
@@ -140,6 +141,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         max_class_only=False,
         box_xywh=None,
         box_xyxy=None,
+        explain_fromFile=None, ## target bounding boxes
         cmap='viridis',
         smooth_ks=7,
         filter_rank_dir = "Unit_pickler_temp",
@@ -214,6 +216,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
                                       fwd_hooks={ Concat : Concat_fwd_hook,
                                                   SPPF : SPPF_fwd_hook,},
                                       inv_funcs={ C3 : prop_C3,
+                                                  C3_cv2_pruned: prop_C3_cv2_pruned,
                                                   Conv : prop_Conv,
                                                   Detect : prop_Detect,
                                                   Bottleneck : prop_Bottleneck,
@@ -225,6 +228,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
 
 
         visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
+        coord_scalors = im.shape[2:]
         pred = inn_model.evaluate(im)
         t3 = time_sync()
         dt[1] += t3 - t2
@@ -268,8 +272,41 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
 
         # Second-stage classifier (optional)
         # pred = utils.general.apply_classifier(pred, classifier_model, im, im0s)
+        # print(nms_pred)
+        # print(nms_pred[0].dtype)
+
+        ## MOD : hacky way to load predictions from yolo lbl file
+        if explain_fromFile is not None: 
+            # targets = load_targets(explain_fromFile, names)
+            data = np.loadtxt(explain_fromFile, dtype = np.single)
+            if len(data) != 0:
+                if len(data.shape) == 1: data = np.expand_dims(data, axis=0)
+                # data[:, [1,3]] *= imgsz[0]
+                # data[:, [2,4]] *= imgsz[1]
+                # print(data, imgsz)
+                data = torch.from_numpy(data).to(device)
+                nms_pred = torch.zeros(data.shape[0], 6, dtype = nms_pred[0].dtype, device=device)
+                nms_pred[:, 0] = data[:,1] - data[:,3]/2
+                nms_pred[:, 1] = data[:,2] - data[:,4]/2
+                nms_pred[:, 2] = data[:,1] + data[:,3]/2
+                nms_pred[:, 3] = data[:,2] + data[:,4]/2
+
+                nms_pred[:, [0,2]] *= coord_scalors[1]
+                nms_pred[:, [1,3]] *= coord_scalors[0]
+
+                nms_pred[:, 4] = 1 ## conf to 1 
+                nms_pred[:, -1] = data[:, 0]
+
+                # for class_no in data[:, 0]:
+                #     nms_pred[:, 5+int(class_no)] = 1
+
+                nms_pred = [nms_pred]
+            del data
+
+        # print(nms_pred)
 
         # Process predictions
+        
         for i, det in enumerate(nms_pred):  # per image
             
             seen += 1
@@ -430,6 +467,8 @@ def parse_opt():
     
     ## MOD : add argument where to dump the pickled filter ranks 
     parser.add_argument('--filter_rank_dir', default=None, type=str, help='filter_rank_dir')
+    ## MOD : add argument to explain from a provided file
+    parser.add_argument('--explain-fromFile', type = str, default = None, help='Path to file with boxes to explain in (X,Y,W,H, cls, conf, [cls_conf])',)
     
     opt = parser.parse_args()
     if opt.cmap is None :

@@ -127,6 +127,28 @@ def prop_C3(*args):
 
     return relevance
 
+def prop_C3_cv2_pruned(*args):
+    # print("######## prop_C3 start #######")
+    inverter, mod, relevance = args
+    msg = relevance.scatter(which=-1)
+
+    msg = inverter(mod.cv3, msg)
+
+    # print("Output shapes (cv2, m[-1])", mod.cv2.conv.out_channels, mod.m[-1].cv2.conv.out_tensor.shape)
+
+    for m1 in reversed(mod.m):
+        msg = inverter(m1, msg)
+
+
+    # print("after  cv1, cv2",msg_cv1.shape, msg_cv2.shape)
+
+    msg = inverter(mod.cv1, msg)
+    relevance.gather([(-1, msg)])
+
+    # print("######## prop_C3 end #######")
+
+    return relevance
+
 def prop_Bottleneck(*args):
 
     inverter, mod, relevance_in = args
